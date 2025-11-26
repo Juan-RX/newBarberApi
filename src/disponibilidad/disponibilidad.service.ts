@@ -322,8 +322,9 @@ export class DisponibilidadService {
   /**
    * Procesa solicitud de disponibilidad de fechas del mall (Interface 9 - SOL_DISP_FECHA)
    * Retorna disponibilidad en formato Interface 10 - DISP_FECHA
+   * Si se proporciona appointment_date sin appointment_time, retorna TODOS los slots disponibles del día
    */
-  async solicitarDisponibilidadFechaMall(solicitudDto: SolDispFechaDto): Promise<DispFechaResponseDto> {
+  async solicitarDisponibilidadFechaMall(solicitudDto: SolDispFechaDto): Promise<DispFechaResponseDto[]> {
     // Buscar el servicio por código externo
     const servicio = await this.servicioRepository.findOne({
       where: { codigoExterno: solicitudDto.service_external_id },
@@ -350,28 +351,72 @@ export class DisponibilidadService {
     }
 
     // Determinar rango de fechas para la consulta
+    // appointment_date es obligatorio según la matriz de conexiones
     let fechaInicio: Date;
     let fechaFin: Date;
 
-    if (solicitudDto.appointment_date) {
-      // Si se proporciona fecha específica, buscar disponibilidad para ese día
-      try {
-        fechaInicio = parseFechaAmigable(solicitudDto.appointment_date);
-        fechaInicio.setHours(0, 0, 0, 0);
-        
-        fechaFin = new Date(fechaInicio);
-        fechaFin.setHours(23, 59, 59, 999);
-      } catch (error) {
-        throw new BadRequestException(`Formato de fecha inválido: ${solicitudDto.appointment_date}`);
+    try {
+      // Validar formato de fecha (debe ser YYYY-MM-DD exactamente con 4 dígitos para el año)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(solicitudDto.appointment_date)) {
+        throw new BadRequestException(
+          `Formato de fecha inválido: ${solicitudDto.appointment_date}. Use formato YYYY-MM-DD (ej: 2024-12-23)`,
+        );
       }
-    } else {
-      // Si no se proporciona fecha, buscar disponibilidad para los próximos 30 días
-      fechaInicio = new Date();
+
+      // Validar que el año tenga exactamente 4 dígitos (validar antes de parsear)
+      const partesFecha = solicitudDto.appointment_date.split('-');
+      const añoStr = partesFecha[0];
+      if (añoStr.length !== 4 || !/^\d{4}$/.test(añoStr)) {
+        throw new BadRequestException(
+          `El año debe tener exactamente 4 dígitos. Fecha proporcionada: ${solicitudDto.appointment_date}`,
+        );
+      }
+
+      fechaInicio = parseFechaAmigable(solicitudDto.appointment_date);
+      
+      // Validar que la fecha sea válida
+      if (isNaN(fechaInicio.getTime())) {
+        throw new BadRequestException(`Fecha inválida: ${solicitudDto.appointment_date}`);
+      }
+
+      // Validar que el año esté en un rango razonable (2000-2100)
+      const año = fechaInicio.getFullYear();
+      if (año < 2000 || año > 2100) {
+        throw new BadRequestException(
+          `El año ${año} está fuera del rango válido (2000-2100). Fecha proporcionada: ${solicitudDto.appointment_date}`,
+        );
+      }
+
+      // Validar que la fecha no sea en el pasado
+      const hoy = new Date();
+      hoy.setHours(0, 0, 0, 0);
       fechaInicio.setHours(0, 0, 0, 0);
       
+      if (fechaInicio < hoy) {
+        throw new BadRequestException(
+          `La fecha ${solicitudDto.appointment_date} es en el pasado. Solo se pueden consultar fechas futuras.`,
+        );
+      }
+
+      // Validar que la fecha no esté demasiado lejana en el futuro (máximo 90 días)
+      const fechaMaxima = new Date(hoy);
+      fechaMaxima.setDate(fechaMaxima.getDate() + 90);
+      fechaMaxima.setHours(23, 59, 59, 999);
+      
+      if (fechaInicio > fechaMaxima) {
+        throw new BadRequestException(
+          `La fecha ${solicitudDto.appointment_date} está más de 90 días en el futuro. Solo se pueden consultar fechas hasta 90 días adelante.`,
+        );
+      }
+
+      fechaInicio.setHours(0, 0, 0, 0);
       fechaFin = new Date(fechaInicio);
-      fechaFin.setDate(fechaFin.getDate() + 30);
       fechaFin.setHours(23, 59, 59, 999);
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new BadRequestException(`Formato de fecha inválido: ${solicitudDto.appointment_date}`);
     }
 
     if (fechaInicio >= fechaFin) {
@@ -425,78 +470,17 @@ export class DisponibilidadService {
     const fechaActual = new Date(fechaInicio);
     fechaActual.setHours(0, 0, 0, 0);
 
-    // Si se proporciona appointment_time, procesar solo ese slot específico
-    if (solicitudDto.appointment_time && solicitudDto.appointment_date) {
-      try {
-        const fechaHora = parseFechaAmigable(
-          `${solicitudDto.appointment_date} ${solicitudDto.appointment_time}`,
-        );
-        
-        // Para cada barbero, verificar disponibilidad solo en ese slot
-        for (const barbero of barberos) {
-          const horarioDisponible = await this.horarioService.calcularHorarioDisponible(
-            solicitudDto.store_id,
-            barbero.barberoId,
-            fechaHora,
-          );
+    // Array para recopilar todos los slots disponibles del día
+    const slotsDisponibles: DispFechaResponseDto[] = [];
 
-          if (!horarioDisponible) {
-            continue;
-          }
+    // Función auxiliar para formatear la hora (HH:mm) desde una fecha
+    const formatearHora = (fecha: Date): string => {
+      const hours = String(fecha.getHours()).padStart(2, '0');
+      const minutes = String(fecha.getMinutes()).padStart(2, '0');
+      return `${hours}:${minutes}`;
+    };
 
-          const pausas = await this.horarioService.obtenerPausasBarbero(barbero.barberoId, fechaHora);
-          const slotInicio = new Date(fechaHora);
-          const slotFin = new Date(fechaHora);
-          slotFin.setMinutes(slotFin.getMinutes() + duracionMinutos);
-
-          // Verificar si el slot está en una pausa
-          const slotHoraInicio = slotInicio.getHours();
-          const slotMinutoInicio = slotInicio.getMinutes();
-          const slotHoraFin = slotFin.getHours();
-          const slotMinutoFin = slotFin.getMinutes();
-
-          const enPausa = this.horarioService.verificarSlotEnPausa(
-            slotHoraInicio,
-            slotMinutoInicio,
-            slotHoraFin,
-            slotMinutoFin,
-            pausas,
-          );
-
-          const disponible = !enPausa && this.isSlotDisponible(slotInicio, slotFin, barbero.barberoId, citasExistentes);
-
-          // Solo devolver el primer slot disponible
-          if (disponible) {
-            const citaEnSlot = citasDelServicio.find((cita) => {
-              return (
-                cita.barberoId === barbero.barberoId &&
-                ((slotInicio >= cita.fechaInicio && slotInicio < cita.fechaFin) ||
-                  (slotFin > cita.fechaInicio && slotFin <= cita.fechaFin) ||
-                  (slotInicio <= cita.fechaInicio && slotFin >= cita.fechaFin))
-              );
-            });
-
-            return {
-              servicio_id: servicio.servicioId,
-              fecha_inicio: formatearFecha(slotInicio),
-              fecha_fin: formatearFecha(slotFin),
-              duracion_minutos: duracionMinutos,
-              id_cita: citaEnSlot?.citaId || null,
-              id_barbero: barbero.barberoId,
-            };
-          }
-        }
-
-        // Si no hay slot disponible, lanzar excepción
-        throw new NotFoundException('No hay disponibilidad en el slot solicitado');
-      } catch (error) {
-        throw new BadRequestException(
-          `Formato de fecha/hora inválido: ${solicitudDto.appointment_date} ${solicitudDto.appointment_time}`,
-        );
-      }
-    }
-
-    // Procesar rango de fechas (sin hora específica)
+    // Procesar el día solicitado - recopilar TODOS los slots disponibles
     while (fechaActual <= fechaFin) {
       // Para cada barbero
       for (const barbero of barberos) {
@@ -549,7 +533,7 @@ export class DisponibilidadService {
           // Verificar si el slot está disponible (no hay cita y no está en pausa)
           const disponible = !enPausa && this.isSlotDisponible(slotInicio, slotFin, barbero.barberoId, citasExistentes);
 
-          // Solo devolver el primer slot disponible
+          // Agregar todos los slots disponibles al array
           if (disponible) {
             // Buscar si hay una cita existente en este slot
             const citaEnSlot = citasDelServicio.find((cita) => {
@@ -561,14 +545,15 @@ export class DisponibilidadService {
               );
             });
 
-            return {
+            slotsDisponibles.push({
               servicio_id: servicio.servicioId,
               fecha_inicio: formatearFecha(slotInicio),
               fecha_fin: formatearFecha(slotFin),
               duracion_minutos: duracionMinutos,
+              appointment_time: formatearHora(slotInicio),
               id_cita: citaEnSlot?.citaId || null,
-              id_barbero: barbero.barberoId,
-            };
+              id_bar: barbero.barberoId,
+            });
           }
 
           // Avanzar al siguiente slot (usar duración del servicio como intervalo)
@@ -580,8 +565,8 @@ export class DisponibilidadService {
       fechaActual.setDate(fechaActual.getDate() + 1);
     }
 
-    // Si no hay slot disponible, lanzar excepción
-    throw new NotFoundException('No hay disponibilidad en el rango de fechas solicitado');
+    // Retornar todos los slots encontrados (puede ser un array vacío)
+    return slotsDisponibles;
   }
 }
 

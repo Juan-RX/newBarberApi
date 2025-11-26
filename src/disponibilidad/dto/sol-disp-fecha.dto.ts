@@ -18,7 +18,7 @@ export class SolDispFechaDto {
 
   @ApiProperty({
     description: 'ID externo del servicio (codigo_externo)',
-    example: 'SRV-EXT-001',
+    example: 'SRV003',
   })
   @IsString()
   @IsNotEmpty()
@@ -27,19 +27,9 @@ export class SolDispFechaDto {
   @ApiProperty({
     description: 'Fecha de la cita (formato YYYY-MM-DD)',
     example: '2024-12-23',
-    required: false,
   })
   @IsString()
-  @IsOptional()
-  appointment_date?: string;
-
-  @ApiProperty({
-    description: 'Hora de la cita (formato HH:mm o ISO 8601)',
-    example: '10:00',
-    required: false,
-  })
-  @IsString()
-  @IsOptional()
-  appointment_time?: string;
+  @IsNotEmpty()
+  appointment_date: string;
 }
 

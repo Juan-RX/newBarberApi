@@ -7,7 +7,7 @@ import { IsString, IsNotEmpty } from 'class-validator';
 export class AssignCodigoExternoDto {
   @ApiProperty({
     description: 'Código externo a asignar',
-    example: 'SRV-EXT-001',
+    example: 'SRV-001',
   })
   @IsString()
   @IsNotEmpty()

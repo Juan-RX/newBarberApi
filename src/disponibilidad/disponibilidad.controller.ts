@@ -89,18 +89,18 @@ export class DisponibilidadController {
   @ApiOperation({
     summary: 'Solicitar disponibilidad de fechas del mall (Interface 9 - SOL_DISP_FECHA)',
     description:
-      'Endpoint para que el mall solicite disponibilidad de fechas. Recibe store_id, service_external_id, appointment_date (opcional) y appointment_time (opcional). Retorna disponibilidad en formato Interface 10 - DISP_FECHA. Si no se proporciona fecha/hora, busca disponibilidad para los próximos 30 días.',
+      'Endpoint para que el mall solicite disponibilidad de fechas. Recibe store_id, service_external_id y appointment_date (obligatorio). Retorna TODOS los slots disponibles para el día especificado en formato Interface 10 - DISP_FECHA. Según matriz de conexiones: SOL_DISP_FECHA envía store_id, service_external_id, appointment_date; DISP_FECHA retorna servicio_id, fecha_inicio, fecha_fin, duracion_minutos, appointment_time, id_cita, id_bar.',
   })
   @ApiResponse({
     status: 200,
-    description: 'Disponibilidad de fechas en formato mall (Interface 10 - DISP_FECHA)',
-    type: DispFechaResponseDto,
+    description: 'Lista de slots disponibles en formato mall (Interface 10 - DISP_FECHA). Retorna TODOS los slots disponibles para el día solicitado.',
+    type: [DispFechaResponseDto],
   })
   @ApiResponse({ status: 400, description: 'Parámetros inválidos' })
   @ApiResponse({ status: 404, description: 'Servicio no encontrado' })
   solicitarDisponibilidadFechaMall(
     @Body() solicitudDto: SolDispFechaDto,
-  ): Promise<DispFechaResponseDto> {
+  ): Promise<DispFechaResponseDto[]> {
     return this.disponibilidadService.solicitarDisponibilidadFechaMall(solicitudDto);
   }
 }
